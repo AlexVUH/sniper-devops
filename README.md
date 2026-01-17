@@ -1,3 +1,6 @@
+## Estrutura do projeto
+
+```text
 sniper/
 ├── sniper.sh                # CLI principal (dispatcher)
 │
