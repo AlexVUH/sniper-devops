@@ -1,7 +1,7 @@
 ## Estrutura do projeto
 
 ```text
-sniper/
+sniper-devops/
 ├── sniper.sh                # CLI principal (dispatcher)
 │
 ├── conf/
