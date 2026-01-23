@@ -83,3 +83,4 @@ BUGS CONHECIDOS
 regras 09 e 11 - se eu bloquear o IP 8.8.8.8 eu não consigo bloquear o bloco 8.8.8.0/24, diz que já está bloqueado
 
 VER LOGS EM TODA AÇÃO DE ADD
+teste
