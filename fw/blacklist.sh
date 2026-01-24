@@ -4,7 +4,7 @@ IFS=$'\n\t'
 
 # Configs e libs
 source "${ROOT_DIR}/conf/sniper.conf"
-source "${ROOT_DIR}/conf/blacklist.conf"
+# (blacklist.conf foi descontinuado para SET_NAME/TIMEOUT)
 source "${ROOT_DIR}/lib/core.sh"
 source "${ROOT_DIR}/lib/log.sh"
 source "${ROOT_DIR}/lib/validate.sh"
@@ -16,18 +16,39 @@ require_root
 # Lock agora ocorre após garantir root (evita Permission denied em /tmp)
 core_acquire_lock
 
-# Remove --debug dos parâmetros (como no original)
+# Remove flags dos parâmetros e detecta --autoblock/--force local
 ARGS=()
+LOCAL_AUTOBLOCK=0
+LOCAL_FORCE=0
 for arg in "$@"; do
-  [[ "$arg" != "--debug" ]] && ARGS+=("$arg")
+  case "$arg" in
+    --debug)      ;; # já tratado
+    --autoblock)  LOCAL_AUTOBLOCK=1 ;;
+    --force)      LOCAL_FORCE=1 ;;
+    *)            ARGS+=("$arg") ;;
+  esac
 done
+
+# Fonte do bloqueio (manual/auto)
+if [[ "${AUTOBLOCK:-0}" == "1" || "$LOCAL_AUTOBLOCK" -eq 1 ]]; then
+  SOURCE="auto"
+else
+  SOURCE="manual"
+fi
+
+# Forçar inclusão mesmo contra whitelist?
+if [[ "${FORCE:-0}" == "1" || "$LOCAL_FORCE" -eq 1 ]]; then
+  FORCE_ACTIVE=1
+else
+  FORCE_ACTIVE=0
+fi
 
 ACTION="${ARGS[0]:-}"
 IP="${ARGS[1]:-}"
 CMD="${ARGS[2]:-}"
 ARGS_LEN=${#ARGS[@]}
 
-# HELP do módulo → delega para o help raiz, para manter 100% idêntico
+# HELP do módulo → delega para o help raiz
 case "$ACTION" in
   help|"")
     exec "${ROOT_DIR}/sniper.sh" help
@@ -42,10 +63,14 @@ case "$ACTION" in
     ;;
 esac
 
-# 🔹 Log de parâmetros no módulo (formato solicitado)
-debug "Parâmetros: ACTION=${ACTION:-<vazio>} IP=${IP:-<vazio>} CMD=${CMD:-<vazio>}"
+# DEBUG de parâmetros (omite IP em list/flush)
+if [[ "$CMD" == "list" || "$CMD" == "flush" ]]; then
+  debug "Parâmetros: ACTION=${ACTION:-<vazio>} CMD=${CMD:-<vazio>}"
+else
+  debug "Parâmetros: ACTION=${ACTION:-<vazio>} IP=${IP:-<vazio>} CMD=${CMD:-<vazio>}"
+fi
 
-# Helper: só imprime a mensagem colorida se NÃO estiver em DEBUG
+# Helper: só imprime mensagem colorida se NÃO estiver em DEBUG
 maybe_echo() {
   local msg="$1"
   if [[ "${DEBUG:-0}" != "1" ]]; then
@@ -53,10 +78,8 @@ maybe_echo() {
   fi
 }
 
-# Guardamos o terceiro argumento bruto (antes de normalizar) para detectar extras
+# Normaliza list/flush indevidos com extra
 RAW_THIRD="${ARGS[2]:-}"
-
-# Se ACTION foi 'list' ou 'flush' (via dispatcher: fw list [extra]) → rejeita extra
 if [[ "$IP" == "list" || "$IP" == "flush" ]]; then
   if [[ -n "${RAW_THIRD:-}" ]]; then
     RESULT_MSG="Uso inválido: 'list' e 'flush' não aceitam parâmetros (ex.: use 'sniper.sh fw ${IP}')"
@@ -66,11 +89,8 @@ if [[ "$IP" == "list" || "$IP" == "flush" ]]; then
     fi
     exit 2
   fi
-  CMD="$IP"
-  IP=""
+  CMD="$IP"; IP=""
 fi
-
-# ❗ Também proíbe 'list' e 'flush' quando vierem como CMD com IP preenchido (fw 1.2.3.4 list)
 if [[ "$CMD" == "list" || "$CMD" == "flush" ]]; then
   if [[ -n "${IP:-}" ]]; then
     RESULT_MSG="Uso inválido: 'list' e 'flush' não aceitam parâmetros (ex.: use 'sniper.sh fw ${CMD}')"
@@ -86,7 +106,7 @@ case "$CMD" in
   add)
     check_ipset_exists || exit 3
 
-    # IP/CIDR inválido → DEBUG + exit 2
+    # IP/CIDR inválido
     if ! is_valid_ip_or_cidr "$IP"; then
       RESULT_MSG="Erro: IP ou CIDR inválido: $IP"
       debug "$RESULT_MSG"
@@ -94,15 +114,37 @@ case "$CMD" in
       exit 2
     fi
 
-    # Garante regra (mantido igual à sua lógica atual)
+    # ✅ WHITELIST: se ativo e NÃO forçado, barrar com exit 6
+    WL_REASON=""
+    if [[ "${WHITELIST_ENABLED:-0}" == "1" && "$FORCE_ACTIVE" -ne 1 ]]; then
+      WL_REASON="$(whitelist_match_reason "$IP")"
+      if [[ -n "$WL_REASON" ]]; then
+        RESULT_MSG="IP não permitido (motivo: ${WL_REASON})"
+        debug "$RESULT_MSG"
+        maybe_echo "${BLUE}$RESULT_MSG${RESET}"
+        exit 6   # <-- novo código dedicado a whitelist
+      fi
+    fi
+
+    # Se --force, capturar motivo para auditoria (se houver)
+    if [[ "$FORCE_ACTIVE" -eq 1 && "${WHITELIST_ENABLED:-0}" == "1" ]]; then
+      [[ -z "$WL_REASON" ]] && WL_REASON="$(whitelist_match_reason "$IP")"
+      if [[ -n "$WL_REASON" ]]; then
+        debug "Forçando inclusão apesar da whitelist (motivo detectado: ${WL_REASON})"
+      else
+        debug "Forçando inclusão (sem motivo de whitelist detectado)"
+      fi
+    fi
+
+    # Continua fluxo normal
     ensure_iptables_rule
 
     if ipset test "$SET_NAME" "$IP" >/dev/null 2>&1; then
       RESULT_MSG="$IP já está bloqueado"
       debug "$RESULT_MSG"
       maybe_echo "${YELLOW}$RESULT_MSG${RESET}"
-      # ✅ LogCenter: registrar tentativa idempotente
-      log_event "add" "$IP" "already_blocked" "$TIMEOUT"
+      # LogCenter: tentativa idempotente (passa override e motivo)
+      log_event "add" "$IP" "already_blocked" "$TIMEOUT" "$SOURCE" "" "$FORCE_ACTIVE" "$WL_REASON"
       exit 4
     fi
 
@@ -111,19 +153,19 @@ case "$CMD" in
       RESULT_MSG="Falha ao adicionar $IP ao set $SET_NAME"
       debug "$RESULT_MSG"
       maybe_echo "${RED}$RESULT_MSG${RESET}"
-      # (Opcional) log_event "add" "$IP" "error" "$TIMEOUT"
+      # (Opcional) log_event "add" "$IP" "error" "$TIMEOUT" "$SOURCE" "" "$FORCE_ACTIVE" "$WL_REASON"
       exit 1
     fi
 
-    # Logs locais (compat)
+    # Log TXT legado
     log_block "$IP"
 
     RESULT_MSG="$IP bloqueado com sucesso"
     debug "$RESULT_MSG"
     maybe_echo "${GREEN}$RESULT_MSG${RESET}"
 
-    # ✅ LogCenter: somente ADD bem-sucedido
-    log_event "add" "$IP" "blocked" "$TIMEOUT"
+    # LogCenter: ADD bem-sucedido (passa override e motivo)
+    log_event "add" "$IP" "blocked" "$TIMEOUT" "$SOURCE" "" "$FORCE_ACTIVE" "$WL_REASON"
     ;;
 
   del)
@@ -136,7 +178,6 @@ case "$CMD" in
       exit 2
     fi
 
-    # Revalida se ainda está bloqueado (pode ter expirado entre checagens)
     if ! ipset test "$SET_NAME" "$IP" >/dev/null 2>&1; then
       RESULT_MSG="$IP não está bloqueado"
       debug "$RESULT_MSG"
@@ -182,22 +223,18 @@ case "$CMD" in
   list)
     check_ipset_exists || exit 3
     if [[ "${DEBUG:-0}" == "1" ]]; then
-      # Modo DEBUG: uma linha [DEBUG] por membro (com timeout)
       mapfile -t _members < <(ipset list "$SET_NAME" | awk '/Members:/{flag=1; next} flag && NF {print}')
       for _m in "${_members[@]}"; do
         debug "$_m"
       done
     else
-      # Modo normal: imprimir a linha completa (inclui timeout), sem headers
-      ipset list "$SET_NAME" \
-        | awk '/Members:/{flag=1; next} flag && NF {print}'
+      ipset list "$SET_NAME" | awk '/Members:/{flag=1; next} flag && NF {print}'
     fi
     ;;
 
   flush)
     check_ipset_exists || exit 3
     ipset flush "$SET_NAME"
-
     RESULT_MSG="Blacklist esvaziada"
     debug "$RESULT_MSG"
     maybe_echo "${GREEN}$RESULT_MSG${RESET}"

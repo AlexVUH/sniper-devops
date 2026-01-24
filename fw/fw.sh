@@ -22,20 +22,40 @@ Uso:
   sniper.sh fw flush
   sniper.sh fw help
   sniper.sh fw --debug <comando>
+
+Flags:
+  --autoblock    Marca a inclusão como automática (ex.: cron)
+                 Ex.: sniper.sh fw 8.8.8.0/24 add --autoblock
+
+  --force        Força a inclusão mesmo que o IP/CIDR esteja na whitelist.
+                 Use com extremo cuidado. Evento será auditado como override.
+                 Ex.: sniper.sh fw 172.64.1.2 add --force
+
+Exit codes:
+  0  Sucesso
+  1  Erro genérico
+  2  Uso inválido / IP/CIDR inválido / parâmetros indevidos
+  3  ipset inexistente
+  4  IP já bloqueado
+  5  IP não está bloqueado
+  6  Barrado pela whitelist (blocked_by_whitelist)
 EOF
 }
 
 # ------------------------------------------------------------------
-# Normalização de argumentos: remove --debug localmente
+# Normalização de argumentos: remove --debug, --autoblock, --force
 # ------------------------------------------------------------------
 DEBUG_PRESENT=0
+AUTOBLOCK_PRESENT=0
+FORCE_PRESENT=0
 CLEAN_ARGS=()
 for arg in "$@"; do
-  if [[ "$arg" == "--debug" ]]; then
-    DEBUG_PRESENT=1
-  else
-    CLEAN_ARGS+=("$arg")
-  fi
+  case "$arg" in
+    --debug)      DEBUG_PRESENT=1 ;;
+    --autoblock)  AUTOBLOCK_PRESENT=1 ;;
+    --force)      FORCE_PRESENT=1 ;;
+    *)            CLEAN_ARGS+=("$arg") ;;
+  esac
 done
 
 # Reatribui os parâmetros limpos para facilitar o parsing
@@ -50,16 +70,29 @@ if [[ "$ACTION" == "help" || -z "$ACTION" ]]; then
   exec "${ROOT_DIR}/sniper.sh" help
 fi
 
-# Se NÃO é help, aí sim ativamos/exportamos DEBUG (se --debug estava presente)
-[[ "$DEBUG_PRESENT" -eq 1 ]] && DEBUG=1 && export DEBUG
+# Exporta flags para o módulo
+[[ "$DEBUG_PRESENT"     -eq 1 ]] && DEBUG=1     && export DEBUG
+[[ "$AUTOBLOCK_PRESENT" -eq 1 ]] && AUTOBLOCK=1 && export AUTOBLOCK
+[[ "$FORCE_PRESENT"     -eq 1 ]] && FORCE=1     && export FORCE
 
-# 🔹 Log do dispatcher no formato encaminhado (opcional)
+# Mapeamento para list/flush
 DEST_ACTION="fw"
-DEST_IP="${ACTION:-}"
-DEST_CMD="${IP:-}"
-debug "Parâmetros: ACTION=${DEST_ACTION:-<vazio>} IP=${DEST_IP:-<vazio>} CMD=${DEST_CMD:-<vazio>}"
+if [[ "$ACTION" == "list" || "$ACTION" == "flush" ]]; then
+  DEST_IP=""
+  DEST_CMD="$ACTION"
+else
+  DEST_IP="$ACTION"
+  DEST_CMD="$IP"
+fi
 
-# ❗ Validação imediata: list/flush NÃO aceitam argumentos extras
+# DEBUG do dispatcher (omite IP em list/flush)
+if [[ "$DEST_CMD" == "list" || "$DEST_CMD" == "flush" ]]; then
+  debug "Parâmetros: ACTION=${DEST_ACTION:-<vazio>} CMD=${DEST_CMD:-<vazio>}"
+else
+  debug "Parâmetros: ACTION=${DEST_ACTION:-<vazio>} IP=${DEST_IP:-<vazio>} CMD=${DEST_CMD:-<vazio>}"
+fi
+
+# Validação imediata: list/flush sem extras
 if [[ "$ACTION" == "list" || "$ACTION" == "flush" ]]; then
   if [[ -n "${IP:-}" ]]; then
     MSG="Uso inválido: 'list' e 'flush' não aceitam parâmetros (ex.: use 'sniper.sh fw $ACTION')"
@@ -72,7 +105,4 @@ if [[ "$ACTION" == "list" || "$ACTION" == "flush" ]]; then
 fi
 
 # Encaminha para a implementação:
-#   1º arg: ACTION="fw"
-#   2º arg: IP (pode ser <IP|CIDR>, "list" ou "flush")
-#   3º arg: CMD (ex.: add|del|check) — quando existir
-exec "${ROOT_DIR}/fw/blacklist.sh" "fw" "$ACTION" "$IP"
+exec "${ROOT_DIR}/fw/blacklist.sh" "$DEST_ACTION" "$DEST_IP" "$DEST_CMD"

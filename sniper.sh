@@ -37,29 +37,37 @@ Uso principal:
   ./sniper.sh fw flush
   ./sniper.sh help
 
-Modo debug (mostra apenas linhas [DEBUG]):
-  ./sniper.sh fw --debug <comando>
+Flags úteis:
+  --debug        Mostra somente linhas [DEBUG]...
+  --autoblock    Marca a inclusão como automática (ex.: cron)
+  --force        Força a inclusão mesmo que o IP/CIDR esteja na whitelist
+                 (evento será auditado como override no log).
 
-────────────────────────────────────────────────────────────────────
+Pré-requisitos do módulo FW:
+  1) Criar o IPSET:
+       sudo ipset create blacklist hash:net timeout 1800
+  2) Criar a regra do IPTABLES (bloquear IPs do set blacklist):
+       sudo iptables -I INPUT -m set --match-set blacklist src -j DROP
+  Dicas:
+    - Remover a regra:  sudo iptables -D INPUT -m set --match-set blacklist src -j DROP
+    - Listar o set:     sudo ipset list blacklist
+    - Esvaziar o set:   sudo ipset flush blacklist
 
-PRÉ-REQUISITOS PARA O MÓDULO FIREWALL (fw)
-Antes de usar qualquer comando da blacklist, execute:
+Exit codes:
+  0  Sucesso
+  1  Erro genérico (ex.: ipset add falhou)
+  2  Uso inválido / IP/CIDR inválido / parâmetros indevidos
+  3  ipset inexistente
+  4  IP já bloqueado
+  5  IP não está bloqueado
+  6  Barrado pela whitelist (blocked_by_whitelist)
 
-1) Criar o IPSET:
-     sudo ipset create blacklist hash:net timeout 1800
-
-2) Criar a regra do IPTABLES (bloquear IPs do set blacklist):
-     sudo iptables -I INPUT -m set --match-set blacklist src -j DROP
-
-➜ Remover a regra:
-     sudo iptables -D INPUT -m set --match-set blacklist src -j DROP
-
-➜ Listar conteúdos do set:
-     sudo ipset list blacklist
-
-➜ Limpar (sem destruir) o set:
-     sudo ipset flush blacklist
-
+Notas:
+  • A maioria dos comandos precisa de privilégios de root (sudo).
+  • Em modo DEBUG (--debug), a saída comum é suprimida e apenas
+    mensagens [DEBUG][YYYY-MM-DD HH:MM:SS] são exibidas.
+  • 'list' e 'flush' não aceitam parâmetros adicionais.
+  • O sistema não cria automaticamente regras de iptables.
 EOF
 }
 

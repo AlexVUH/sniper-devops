@@ -5,7 +5,7 @@ IFS=$'\n\t'
 # Trap de erro simples
 trap 'echo -e "Erro na linha $LINENO"; exit 1' ERR
 
-# Cores (iguais ao original, controladas por NO_COLOR)
+# Cores (controladas por NO_COLOR)
 GREEN="\e[32m"; YELLOW="\e[33m"; RED="\e[31m"; BLUE="\e[34m"; CYAN="\e[36m"; RESET="\e[0m"
 
 # Debug default e por env/flag
@@ -18,7 +18,7 @@ core_setup_colors() {
   fi
 }
 
-# Debug no formato solicitado: [DEBUG][YYYY-MM-DD HH:MM:SS] Mensagem
+# Debug no formato: [DEBUG][YYYY-MM-DD HH:MM:SS] Mensagem
 debug() {
   if [ "${DEBUG:-0}" -eq 1 ]; then
     local ts
@@ -27,10 +27,9 @@ debug() {
   fi
 }
 
+# Lock global (arquivo em LOCK_FILE); loga "já está rodando" no TXT
 core_acquire_lock() {
-  # Garante diretório de logs para mensagem de "já está rodando"
   mkdir -p "${LOG_DIR}"
-
   exec 200>"${LOCK_FILE}" || exit 1
   if ! flock -n 200; then
     echo "$(date '+%F %T') ${APP_NAME} já está rodando" >> "${LOG_TXT}"
@@ -38,10 +37,36 @@ core_acquire_lock() {
   fi
 }
 
+# Exige root
 require_root() {
   if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}Erro: execute como root${RESET}"
     exit 1
   fi
   debug "Executando como root"
+}
+
+# ✅ NOVO: garante dependências (ex.: require_cmds jq ipset iptables)
+# - Imprime a lista de comandos ausentes
+# - Em modo DEBUG imprime também via debug()
+# - Em modo normal imprime a linha colorida
+# - Sai com código 1 se houver faltantes
+require_cmds() {
+  local missing=()
+  # Usa "$@" com set -u ativo; se nada for passado, não quebra
+  for c in "$@"; do
+    # ignora vazios por segurança
+    [[ -z "${c}" ]] && continue
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+
+  if (( ${#missing[@]} )); then
+    local msg="Dependências ausentes: ${missing[*]}"
+    debug "$msg"
+    # Só imprime colorido no modo normal
+    if [[ "${DEBUG:-0}" != "1" ]]; then
+      echo -e "${RED}$msg${RESET}"
+    fi
+    exit 1
+  fi
 }
